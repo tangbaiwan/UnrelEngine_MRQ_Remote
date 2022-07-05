@@ -1,0 +1,344 @@
+# Copyright Epic Games, Inc. All Rights Reserved.
+# by Coffee at 1657003908
+import unreal
+import random 
+import os
+import threading
+import time
+
+render_target = r'H:\info.bat'
+render_target_info = r'H:\info.xml'
+create_files_share_path = r'H:\Creat_files_share.bat'
+Render_Is_Run = r'H:\Render_Is_Run'
+Render_Is_break = r'H:\Render_Is_Break'
+Render_Is_rerender = r'H:\Render_Is_rerender'
+check_frame_path = r'H:\check_frame_path'
+no_job = True
+NewQueue = None
+
+# We want to keep the executor alive so that Python can get the callbacks from it.
+# 我们希望让执行器保持活动状态，以便 Python 可以从中获取回调。
+SubsystemExecutor = None
+
+
+def OnQueueFinishedCallback(executor, success):
+    global SpawnedPointLightActor
+    global NewQueue
+    global SubsystemExecutor
+
+    unreal.log("Render completed. Success: " + str(success))
+    global SpawnedPointLightActor
+    unreal.EditorLevelLibrary.destroy_actor(SpawnedPointLightActor)
+
+    # Delete our reference too so we don't keep it alive.
+    if SpawnedPointLightActor != None:
+        del SpawnedPointLightActor
+    if NewQueue != None:
+        del NewQueue
+    if SubsystemExecutor != None:
+        del SubsystemExecutor
+
+
+def OnIndividualJobFinishedCallback(params):
+    # You can make any edits you want to the editor world here, and the world
+    # will be duplicated when the next render happens. Make sure you undo your
+    # edits in OnQueueFinishedCallback if you don't want to leak state changes
+    # into the editor world.
+    unreal.log("Individual job completed. Changing light color.")
+    global SpawnedPointLightActor
+    # SpawnedPointLightActor.set_light_color((random.uniform(0, 1), random.uniform(0, 1), random.uniform(0, 1), 1))
+
+
+def Read_File(file):
+    """
+    # 读文件内容
+    :param file:
+    :return:
+    """
+    with open(file, encoding='UTF-8') as f:
+        read_all = f.read()
+        f.close()
+    return read_all
+
+
+def Rewrite_File(file, data):
+    """
+    # 写内容到文件
+    :param file:
+    :param data:
+    :return:
+    """
+    with open(file, 'w', encoding='UTF-8') as f:
+        f.write(data)
+        f.close()
+
+
+def RenderQueue_ViaDuplication():
+    subsystem = unreal.get_editor_subsystem(unreal.MoviePipelineQueueSubsystem)
+    pipelineQueue = subsystem.get_queue()
+    del_name = "temp"
+    shoe_messag_value = 999
+    if len(pipelineQueue.get_jobs()) == 0:
+        # DupJob = pipelineQueue.allocate_new_job(unreal.MoviePipelineExecutorJob)
+        # DupJob.sequence = unreal.SoftObjectPath("/Game/Developers/baixiaosheng/NewLevelSequence_3.NewLevelSequence_3")
+        # DupJob.map=unreal.SoftObjectPath("/Game/Assets_Content/Other/Map/LimeStoneTemple/Level_LimeStoneTemple.Level_LimeStoneTemple")
+        # newJob_configuration = unreal.EditorAssetLibrary.load_asset("/Game/Developers/Star_Render/Star_MasterConfig")
+        # DupJob.set_configuration(newJob_configuration)
+        no_job = False
+        unreal.EditorDialog.show_message("StarUnion", "没有检测到MRQ任务面板！",
+                                         unreal.AppMsgType.OK)
+        return
+
+    # 当程序正在运行,再次点击联机渲染 ,状态置为重新运行,然后应该重新启用新线程去开启新的渲染任务
+    if os.path.exists(Render_Is_Run):
+        shoe_messag = unreal.EditorDialog.show_message("StarUnion", "当前正在渲染,是否停止当前渲染任务",
+                                                       unreal.AppMsgType.YES_NO)
+        shoe_messag_value = shoe_messag.value
+        # yes---1  no---0   CANCEL---4
+        print("shoe_messag_value==")
+        print(shoe_messag_value)
+
+        # 当程序正在运行,再次点击联机渲染 ,状态置为重新运行,然后应该重新启用新线程去开启新的渲染任务
+        if shoe_messag_value == 4:
+            try:
+                # 之前重新渲染不生效是因为点击渲染的时候,数据和网络连接都断开更新过,所以再次运行是卡住的.
+                os.makedirs(Render_Is_rerender)
+            except:
+                pass
+        if shoe_messag_value == 1:
+            # 当点击联机渲染退出 ,状态置为中断,然后退出渲染任务
+            try:
+                os.makedirs(Render_Is_break)
+            except:
+                pass
+
+    import socket
+    # 函数 gethostname() 返回当前正在执行 Python 的系统主机名
+    net_id = socket.gethostbyname(socket.gethostname())
+    print(net_id)
+    engine_path = "C:\\Program Files\\Epic Games\\UE_5.0\\Engine\\Binaries\\Win64\\UnrealEditor-Cmd.exe"
+    dllpath = os.path.abspath(os.curdir)  # C:\Program Files\Epic Games\UE_4.26\Engine\Binaries\Win64
+    if "27" in dllpath:
+        engine_path = "C:\\Program Files\\Epic Games\\UE_4.27\\Engine\\Binaries\\Win64\\UE4Editor-Cmd.exe"
+    if "26" in dllpath:
+        engine_path = "C:\\Program Files\\Epic Games\\UE_4.26\\Engine\\Binaries\\Win64\\UE4Editor-Cmd.exe"
+
+    MoviePipelineLocalExecutorClass = "/Script/MovieRenderPipelineCore.MoviePipelinePythonHostExecutor"
+    ExecutorPythonClass = "/Engine/PythonTypes.MoviePipelineExampleRuntimeExecutor"
+
+    # get job
+    for job in pipelineQueue.get_jobs():
+        job.set_status_progress(0.1)
+
+        map_name_softpath = unreal.MoviePipelineLibrary.get_map_package_name(job)
+        # temp_map_name=str(unreal.SystemLibrary.conv_soft_obj_path_to_soft_obj_ref(map_name_softpath))
+
+        map_name = map_name_softpath.split("/")[-1]
+        map_path = map_name_softpath + "." + map_name
+        levelSequencePath_softpath = job.get_editor_property("sequence")
+        temp_levelSequencePath = str(unreal.SystemLibrary.conv_soft_obj_path_to_soft_obj_ref(levelSequencePath_softpath))
+        levelSequencePath = temp_levelSequencePath.split("\'")[1].split('\'')[0]
+        projectpath = unreal.Paths.get_project_file_path()
+        (project_path, projectname) = os.path.split(projectpath)
+        (project_name, extension) = os.path.splitext(projectname)
+
+        if os.path.exists(render_target_info) != 1 and shoe_messag_value != 0 and shoe_messag_value != 4:
+            if os.path.exists(create_files_share_path):
+                print("连接成功!")
+            else:
+                print("测试链接")
+                create_render_share_path = r"W:\S02\PublicMG\StarUnionUpdate\Render_Target\create_render_share.bat"
+                os.system(create_render_share_path)
+                if os.path.exists(create_files_share_path):
+                    print("连接成功!")
+                    time.sleep(5)
+                else:
+                    print("链接错误")
+            file = open(render_target, 'w')
+            file.close()
+            if os.path.exists(render_target_info):
+                file = open(render_target_info).read().split("###")
+                del_name = file[1]
+                open(render_target_info).close()
+            else:
+                del_name = "temp"
+            file = open(render_target_info, 'w')
+            file.close()
+
+        # Now we can configure the job. Calling find_or_add_setting_by_class is how you add new settings or find
+        # the existing one.
+        # outputSetting = job.get_configuration().find_or_add_setting_by_class(unreal.MoviePipelineOutputSetting)
+        #
+        # dddddd=outputSetting.output_directory.path
+        #
+        # # # 增加时间
+        # # if "/{time}" not in dddddd :
+        # #     if dddddd[-1] == "/":
+        # #         dddddd += "{time}"
+        # #     else:
+        # #         dddddd += "/{time}"
+        # #
+        # # outputSetting.output_directory=unreal.DirectoryPath(dddddd)
+        # print("当前输出路径=="+dddddd)
+
+        # outputSetting = job.get_configuration().find_or_add_setting_by_class(unreal.MoviePipelineOutputSetting)
+        # temp_xy=str(outputSetting.output_resolution ).split("x: ")[1].split("}>")[0]
+        # temp_x=str(outputSetting.output_resolution.x)
+        # temp_y = str(outputSetting.output_resolution.y)
+        # outputSetting.file_name_format = "{sequence_name}.{frame_number}"
+        # antiAliasing= job.get_configuration().find_or_add_setting_by_class(unreal.MoviePipelineAntiAliasingSetting)
+        # antiAliasing.spatial_sample_count=8
+        # antiAliasing.temporal_sample_count=4
+        # # none=0 fxaa taa msaa
+        # # antiAliasing.anti_aliasing_method="AAM_MSAA"
+        # RenderQueue = temp_x+"###"+temp_y+"###"+str(antiAliasing.spatial_sample_count)+"###"+str(antiAliasing.temporal_sample_count)
+        # print(RenderQueue)
+
+
+        # 当任务不是取消状态以及停止状态时才改动文件
+        # 之前重新渲染不生效是因为点击渲染的时候,数据和网络连接都断开更新过,所以再次运行是卡住的.
+        if shoe_messag_value != 0 and shoe_messag_value != 1:
+
+            unreal.MoviePipelineEditorLibrary.export_config_to_asset(job.get_configuration(),
+                                                                     "/Game/Developers/Star_Render/",
+                                                                     "Star_MasterConfig",
+                                                                     True)
+            render_target_info_content = net_id + "###" + project_name
+            Rewrite_File(render_target_info, render_target_info_content)
+
+            if "../../" in project_path:
+                try:
+                    project_path = "D:\\SVN"+project_path.split("SVN")[1]
+                except:
+                    pass
+            create_files_share_content = Read_File(create_files_share_path).split("net share ")[
+                                             0] + "net share " + project_name + "=" + "\"" + project_path.replace("/",
+                                                                                                           "\\") + "\""+ " /grant:everyone,full"
+            Rewrite_File(create_files_share_path, create_files_share_content)
+
+            if del_name == "temp":
+                del_name = project_name
+            create_files_del = create_files_share_content.split("net share ")[
+                                   0] + "net share " + del_name + " /delete"
+            Rewrite_File(create_files_share_path, create_files_del)
+            try:
+                os.system(create_files_share_path)
+            except:
+                pass
+            Rewrite_File(create_files_share_path, create_files_share_content)
+            os.system(create_files_share_path)
+
+            outputSetting = job.get_configuration().find_or_add_setting_by_class(unreal.MoviePipelineOutputSetting)
+            temp_x = outputSetting.output_resolution.x
+            temp_y = outputSetting.output_resolution.y
+            if temp_x < 1280:
+                resx, resy = "1280", str(1280*temp_y/temp_x)
+            else:
+                resx, resy = "1280", str(1280*temp_y/temp_x)
+
+            comand_pre = "chcp 65001\n"
+            command = comand_pre + "\"" + engine_path + "\"" + " B:\\" + project_name + ".uproject " + map_name + " -game -MoviePipelineLocalExecutorClass=" + MoviePipelineLocalExecutorClass + " -ExecutorPythonClass=" + ExecutorPythonClass + " -LevelSequence=" + levelSequencePath + " -MapPath=" + map_path + " -windowed -resx="+resx+" -resy="+resy+" -log"
+
+            Rewrite_File(render_target, command)
+
+
+def RenderQueue_InPlace():
+    # We are going to spawn a light into the world at the (0,0,0) point. If you have more than
+    # one job in the queue, we will change the color of the light after each job to show how to
+    # make variations of your render if desired.
+    # 我们将在 (0,0,0) 点向世界生成一盏灯。如果你有超过
+    # 队列中有一个作业，我们将在每个作业后更改灯光颜色以显示如何
+    # 如果需要，可以对渲染进行更改。
+    subsystem = unreal.get_editor_subsystem(unreal.MoviePipelineQueueSubsystem)
+    pipelineQueue = subsystem.get_queue()
+    if(len(pipelineQueue.get_jobs()) == 0):
+        unreal.log_error("Open the Window > Movie Render Queue and add at least one job to use this example.")
+        return
+
+    # Ensure there's at least two jobs so we can show off the editor world change.
+    if(len(pipelineQueue.get_jobs()) == 1):
+        pipelineQueue.duplicate_job(pipelineQueue.get_jobs()[0])
+        unreal.log("Duplicated first job to make a second one to show off multi-job editor world changes.")
+
+    for job in pipelineQueue.get_jobs():
+        unreal.log("Validating job " + str(job))
+
+
+    # This renders the queue that the subsystem belongs with the PIE executor, mimicking Render (Local)
+    global SubsystemExecutor
+    SubsystemExecutor = unreal.MoviePipelinePIEExecutor()
+    SubsystemExecutor.on_executor_finished_delegate.add_callable_unique(OnQueueFinishedCallback)
+    SubsystemExecutor.on_individual_job_work_finished_delegate.add_callable_unique(OnIndividualJobFinishedCallback) # Only available on PIE Executor
+    # Not implemented in this example because we don't set the appropriate output setting
+    # NewExecutor.on_individual_shot_work_finished_delegate.add_callable_unique(OnIndividualShotFinishedCallback)
+
+    # Have the Queue Subsystem run the actual render - this 'locks' the UI while a render is in progress and suppresses the
+    # Sequencer 'Auto Bind to PIE' feature which would cause duplicate objects.
+    subsystem.render_queue_with_executor_instance(SubsystemExecutor)
+
+
+def check_frame():
+    time.sleep(5)
+    if no_job:
+        if os.path.exists(Render_Is_Run) != 1 and os.path.exists(check_frame_path):
+
+            show_dialog = "渲染完成"
+            pipelineQueue_2 = unreal.get_editor_subsystem(unreal.MoviePipelineQueueSubsystem).get_queue()
+            pipelineQueue_2.get_jobs()[0].set_status_progress(1.0)
+            pipelineQueue_2 = None
+
+            os.removedirs(check_frame_path)
+            unreal.EditorDialog.show_message("StarUnion", show_dialog, unreal.AppMsgType.OK)
+        elif os.path.exists(Render_Is_Run) != 1:
+            time.sleep(5)
+            if os.path.exists(Render_Is_Run) != 1:
+                print("渲染终止,,,")
+                pipelineQueue_2 = unreal.get_editor_subsystem(unreal.MoviePipelineQueueSubsystem).get_queue()
+                try:
+                    pipelineQueue_2.get_jobs()[0].set_status_progress(0.0)
+                    pipelineQueue_2 = None
+                except:
+                    pass
+            if os.path.exists(Render_Is_Run):
+                check_frame()
+        else:
+            if os.path.exists(check_frame_path) != 1 and os.path.exists(Render_Is_Run):
+                time.sleep(5)
+                print("正在渲染,,,")
+                check_frame()
+
+
+if __name__ =='__main__':
+    print("__main__ test ojbk!!")
+
+if __name__ !='__main__':
+    print("mrq test ojbk!!")
+    # 清除指令
+    if os.path.exists(check_frame_path):
+        os.removedirs(check_frame_path)
+
+    t1 = threading.Thread(target=check_frame, daemon=True)  # 创建thread1线程
+    t1.start()  # 启动thread1线程
+
+    unreal.log_warning("mrq test ojbk!!")
+    RenderQueue_ViaDuplication()
+
+    #  或者 ：
+    # RenderQueue_InPlace()
+
+    # "C:\Program Files\Epic Games\UE_5.0\Engine\Binaries\Win64\UnrealEditor-Cmd.exe"
+    # "F:/_BaiXiaoSheng/Work/Ue5/Vehicle/Vehicle.uproject" "Level_LimeStoneTemple"
+    # -game
+    # -MoviePipelineLocalExecutorClass="/Script/MovieRenderPipelineCore.MoviePipelinePythonHostExecutor"
+    # -ExecutorPythonClass="F:/_BaiXiaoSheng/Work/Render/Python_bxs/bxs_MoviePipelineExampleRuntimeExecutor"
+    # -LevelSequence="/Game/Developers/baixiaosheng/NewLevelSequence_2.NewLevelSequence_2"
+    # -windowed -resx=1280 -resy=720 -log
+
+
+# "C:\Program Files\Epic Games\UE_5.0\Engine\Binaries\Win64\UnrealEditor-Cmd.exe"
+# "F:/_BaiXiaoSheng/Work/Ue5/render_0622/render_0622.uproject" "Level_LimeStoneTemple"
+# -game
+# -MoviePipelineLocalExecutorClass="/Engine/PythonTypes.MoviePipelineExampleRuntimeExecutor"
+# -ExecutorPythonClass="F:/_BaiXiaoSheng/Work/Render/Python_bxs/bxs_MoviePipelineEditorExample.py"
+# -LevelSequence="/Game/Developers/baixiaosheng/NewLevelSequence_2.NewLevelSequence_2"
+# -windowed -resx=1280  -resy=720  -log
